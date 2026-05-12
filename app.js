@@ -1,5 +1,38 @@
 const API_BASE = "https://api.tibiadata.com/v4";
 const HIGHSCORE_PAGE_COUNT = 12;
+const SKILL_HIGHSCORE_PAGE_COUNT = 20;
+const TIBIA_READER_BASE = "https://r.jina.ai/http://r.jina.ai/http://";
+const TIBIA_HIGHSCORE_CATEGORIES = {
+  axe: 2,
+  club: 4,
+  distance: 5,
+  experience: 6,
+  fist: 8,
+  magic: 11,
+  shielding: 12,
+  sword: 13,
+};
+const TIBIA_HIGHSCORE_PROFESSIONS = {
+  none: 1,
+  knight: 2,
+  paladin: 3,
+  sorcerer: 4,
+  druid: 5,
+  monk: 6,
+};
+const TIBIA_VOCATIONS = [
+  "Exalted Monk",
+  "Master Sorcerer",
+  "Elder Druid",
+  "Royal Paladin",
+  "Elite Knight",
+  "Sorcerer",
+  "Paladin",
+  "Knight",
+  "Druid",
+  "Monk",
+  "None",
+];
 const state = {
   tab: "character",
   maxLevel: 2600,
@@ -142,6 +175,14 @@ async function fetchJson(url) {
     throw new Error(`A API respondeu ${response.status}.`);
   }
   return response.json();
+}
+
+async function fetchText(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`A fonte respondeu ${response.status}.`);
+  }
+  return response.text();
 }
 
 async function fetchHighscoreEntries(world, category, pages = 1) {
@@ -365,13 +406,27 @@ function renderGuildExperience(guild) {
     name: member.name,
     vocation: member.vocation,
     level: member.level,
-    experience: member.experience,
+    dailyExperience: calculateDelta(member.name, 1),
+    weeklyExperience: calculateDelta(member.name, 7),
     monthlyExperience: getMonthlyExperience(member.name),
+    semesterExperience: calculateDelta(member.name, 180),
+    yearlyExperience: calculateDelta(member.name, 365),
   }));
   return `
     <table class="member-table">
-      <thead><tr><th>Nickname</th><th>Vocacao</th><th>Nivel</th><th>Experiencia total</th><th>Experiencia mensal</th></tr></thead>
-      <tbody>${rows.map(renderGuildExperienceRow).join("") || renderEmptyRow()}</tbody>
+      <thead>
+        <tr>
+          <th>Nickname</th>
+          <th>Vocacao</th>
+          <th>Nivel</th>
+          <th>Diaria</th>
+          <th>Semanal</th>
+          <th>Mensal</th>
+          <th>Semestral</th>
+          <th>Anual</th>
+        </tr>
+      </thead>
+      <tbody>${rows.map(renderGuildExperienceRow).join("") || renderEmptyRow(8)}</tbody>
     </table>
   `;
 }
@@ -478,8 +533,11 @@ function renderGuildExperienceRow(member) {
       <td><button class="text-button" data-character="${escapeHtml(member.name)}" type="button">${escapeHtml(member.name)}</button></td>
       <td>${escapeHtml(member.vocation)}</td>
       <td>${member.level || "-"}</td>
-      <td>${formatNumber(member.experience)}</td>
+      <td>${formatOptionalNumber(member.dailyExperience)}</td>
+      <td>${formatOptionalNumber(member.weeklyExperience)}</td>
       <td>${formatOptionalNumber(member.monthlyExperience)}</td>
+      <td>${formatOptionalNumber(member.semesterExperience)}</td>
+      <td>${formatOptionalNumber(member.yearlyExperience)}</td>
     </tr>
   `;
 }
@@ -650,15 +708,62 @@ function getRelevantSkillColumns(vocation = "") {
 
 async function findSkillRank(character, column) {
   if (!character.world || character.world === "-") return null;
+  const vocation = getHighscoreVocation(character.vocation);
+  const vocationRank = await findTibiaComSkillRank(character, column, vocation);
+  if (vocationRank) return vocationRank;
+
   const entries = await fetchHighscoreEntries(character.world, column.category, HIGHSCORE_PAGE_COUNT);
-  const match = entries
+  const sameVocationEntries = entries
     .map(normalizeRankingEntry)
-    .find((entry) => normalizeName(entry.name) === normalizeName(character.name));
-  if (!match) return null;
+    .filter((entry) => isSameVocationFamily(entry.vocation, vocation));
+  const matchIndex = sameVocationEntries.findIndex((entry) => normalizeName(entry.name) === normalizeName(character.name));
+  if (matchIndex < 0) return null;
+  const match = sameVocationEntries[matchIndex];
   return {
-    rank: match.rank,
+    rank: matchIndex + 1,
     value: match.experience,
   };
+}
+
+async function findTibiaComSkillRank(character, column, vocation) {
+  const category = TIBIA_HIGHSCORE_CATEGORIES[column.category];
+  const profession = TIBIA_HIGHSCORE_PROFESSIONS[vocation];
+  if (!category || !profession) return null;
+
+  for (let page = 1; page <= SKILL_HIGHSCORE_PAGE_COUNT; page += 1) {
+    const target = `https://www.tibia.com/community/?subtopic=highscores&world=${encodeURIComponent(character.world)}&category=${category}&profession=${profession}&currentpage=${page}`;
+    const text = await fetchText(`${TIBIA_READER_BASE}${target}`).catch(() => "");
+    const entries = parseTibiaComHighscores(text, character.world);
+    const match = entries.find((entry) => normalizeName(entry.name) === normalizeName(character.name));
+    if (match) {
+      return {
+        rank: match.rank,
+        value: match.value,
+      };
+    }
+    if (!entries.length) return null;
+  }
+  return null;
+}
+
+function parseTibiaComHighscores(text, world) {
+  const safeWorld = escapeRegExp(world);
+  const vocationPattern = TIBIA_VOCATIONS.map(escapeRegExp).join("|");
+  const rowPattern = new RegExp(`(\\d+)\\[([^\\]]+)\\]\\([^)]*\\)(${vocationPattern})\\s+${safeWorld}\\s+(\\d+)\\s+([\\d,]+)`, "g");
+  const entries = [];
+  let match = rowPattern.exec(text);
+  while (match) {
+    entries.push({
+      rank: Number(match[1]),
+      name: decodeText(match[2]),
+      vocation: match[3],
+      world,
+      level: Number(match[4]),
+      value: Number(match[5].replace(/,/g, "")),
+    });
+    match = rowPattern.exec(text);
+  }
+  return entries;
 }
 
 function renderSkillCell(result) {
@@ -666,7 +771,7 @@ function renderSkillCell(result) {
   return `
     <td>
       <strong>${formatNumber(result.value)}</strong>
-      <small>Rank #${escapeHtml(String(result.rank))}</small>
+      <small>Rank da vocacao #${escapeHtml(String(result.rank))}</small>
     </td>
   `;
 }
@@ -806,8 +911,34 @@ function toDateKey(value) {
   return date.toISOString().slice(0, 10);
 }
 
+function getHighscoreVocation(vocation = "") {
+  const lower = vocation.toLowerCase();
+  if (lower.includes("knight")) return "knight";
+  if (lower.includes("paladin")) return "paladin";
+  if (lower.includes("sorcerer")) return "sorcerer";
+  if (lower.includes("druid")) return "druid";
+  if (lower.includes("monk")) return "monk";
+  if (lower === "none") return "none";
+  return "all";
+}
+
+function isSameVocationFamily(vocation = "", family = "all") {
+  if (family === "all") return true;
+  return vocation.toLowerCase().includes(family);
+}
+
 function normalizeName(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function decodeText(value) {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = value;
+  return textarea.value;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function minimumExperienceForLevel(level) {
