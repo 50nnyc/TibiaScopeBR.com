@@ -294,7 +294,7 @@ function renderCharacterOverview(character) {
       ${renderDetail("Guild", character.guild)}
       ${renderDetail("Nivel", character.level || "-")}
       ${renderDetail("Vocacao", character.vocation)}
-      ${renderDetail("Rank global geral", renderRankText(ranks.globalOverall), "rankGlobalOverall")}
+      ${ranks.globalOverall ? renderDetail("Rank global geral", renderRankText(ranks.globalOverall), "rankGlobalOverall") : ""}
       ${renderDetail("Rank do mundo", renderRankText(ranks.world), "rankWorld")}
       ${renderDetail("Rank da vocacao", renderRankText(ranks.vocation), "rankVocation")}
       ${renderDetail("Cidade", character.residence)}
@@ -802,9 +802,13 @@ async function hydrateCharacterRanks(character) {
   }));
   if (state.currentCharacter?.name !== character.name) return;
   character.levelRanks = ranks;
-  updateRankDetail("rankGlobalOverall", ranks.globalOverall);
-  updateRankDetail("rankWorld", ranks.world);
-  updateRankDetail("rankVocation", ranks.vocation);
+  const activeDetail = document.querySelector(".detail-tab.active")?.dataset.detail;
+  if (activeDetail === "overview") {
+    document.querySelector("#detailPane").innerHTML = renderCharacterOverview(character);
+  } else {
+    updateRankDetail("rankWorld", ranks.world);
+    updateRankDetail("rankVocation", ranks.vocation);
+  }
 }
 
 async function findLevelRanks(character) {
