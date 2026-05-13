@@ -1,5 +1,6 @@
 const API_BASE = "https://api.tibiadata.com/v4";
 const HIGHSCORE_PAGE_COUNT = 12;
+const LEVEL_RANK_PAGE_COUNT = 20;
 const SKILL_HIGHSCORE_PAGE_COUNT = 20;
 const TIBIA_READER_BASE = "https://r.jina.ai/http://r.jina.ai/http://";
 const TIBIA_HIGHSCORE_CATEGORIES = {
@@ -32,6 +33,13 @@ const TIBIA_VOCATIONS = [
   "Druid",
   "Monk",
   "None",
+];
+const BODY_VOCATION_CLASSES = [
+  "vocation-paladin",
+  "vocation-sorcerer",
+  "vocation-druid",
+  "vocation-knight",
+  "vocation-monk",
 ];
 const state = {
   tab: "character",
@@ -119,6 +127,7 @@ function switchTab(tab) {
     el.notice.textContent = "A pagina do personagem tem abas de ficha, experiencia, mortes e skills.";
   }
   if (tab === "guild") {
+    setBodyVocation("");
     setSearchVisibility({ query: true, world: false, vocation: false, level: false });
     el.searchLabel.textContent = "Nome da guild";
     el.searchInput.placeholder = "Ex: Bald Dwarfs";
@@ -127,6 +136,7 @@ function switchTab(tab) {
     el.notice.textContent = "A pagina da guild lista membros e prepara abas para experiencia e mortes agregadas por membros.";
   }
   if (tab === "world") {
+    setBodyVocation("");
     setSearchVisibility({ query: false, world: true, vocation: true, level: true });
     el.searchInput.disabled = true;
     el.worldInput.disabled = false;
@@ -234,7 +244,7 @@ function normalizeCharacter(data) {
     level,
     vocation: character.vocation || "Desconhecida",
     world: character.world || "-",
-    guild: character.guild?.name || character.guild || "-",
+    guild: getGuildName(character.guild),
     residence: character.residence || "-",
     sex: character.sex || "-",
     title: character.title || "-",
@@ -252,6 +262,7 @@ function normalizeCharacter(data) {
 function renderCharacter(data) {
   const character = normalizeCharacter(data);
   state.currentCharacter = character;
+  setBodyVocation(character.vocation);
   saveSnapshot(character);
 
   el.results.innerHTML = `
@@ -267,6 +278,7 @@ function renderCharacter(data) {
   `;
 
   bindDetailTabs("character");
+  hydrateCharacterRanks(character);
   document.querySelector("#snapshotButton").addEventListener("click", () => {
     saveSnapshot(character);
     el.notice.textContent = `Snapshot de ${character.name} salvo no navegador.`;
@@ -275,12 +287,16 @@ function renderCharacter(data) {
 
 function renderCharacterOverview(character) {
   const monthlyExperience = calculateDelta(character.name, 30);
+  const ranks = character.levelRanks || {};
   return `
     <dl class="detail-list">
       ${renderDetail("Nickname", character.name)}
       ${renderDetail("Guild", character.guild)}
       ${renderDetail("Nivel", character.level || "-")}
       ${renderDetail("Vocacao", character.vocation)}
+      ${renderDetail("Rank global geral", renderRankText(ranks.globalOverall), "rankGlobalOverall")}
+      ${renderDetail("Rank do mundo", renderRankText(ranks.world), "rankWorld")}
+      ${renderDetail("Rank da vocacao", renderRankText(ranks.vocation), "rankVocation")}
       ${renderDetail("Cidade", character.residence)}
       ${renderDetail("Experiencia mensal feita", monthlyExperience === null ? "sem historico" : formatNumber(monthlyExperience))}
       ${renderDetail("Experiencia total", formatNumber(character.experience))}
@@ -444,7 +460,8 @@ function renderWorldRanking(entries) {
   const filtered = entries
     .map(normalizeRankingEntry)
     .filter(applyRankingFilters)
-    .sort((a, b) => b.level - a.level || b.experience - a.experience);
+    .sort((a, b) => b.level - a.level || b.experience - a.experience)
+    .map((entry, index) => ({ ...entry, displayRank: index + 1 }));
 
   el.results.innerHTML = `
     <div class="table-toolbar">
@@ -545,7 +562,7 @@ function renderGuildExperienceRow(member) {
 function renderRankingRow(entry, index) {
   return `
     <tr>
-      <td>${entry.rank || index + 1}</td>
+      <td>${entry.displayRank || index + 1}</td>
       <td><button class="text-button" data-character="${escapeHtml(entry.name)}" type="button">${escapeHtml(entry.name)}</button></td>
       <td>${entry.level || "-"}</td>
       <td>${escapeHtml(entry.vocation)}</td>
@@ -617,11 +634,12 @@ function renderDelta(label, value) {
   `;
 }
 
-function renderDetail(label, value) {
+function renderDetail(label, value, id = "") {
+  const idAttribute = id ? ` id="${id}"` : "";
   return `
     <div>
       <dt>${escapeHtml(label)}</dt>
-      <dd>${escapeHtml(String(value || "-"))}</dd>
+      <dd${idAttribute}>${escapeHtml(String(value || "-"))}</dd>
     </div>
   `;
 }
@@ -709,7 +727,7 @@ function getRelevantSkillColumns(vocation = "") {
 async function findSkillRank(character, column) {
   if (!character.world || character.world === "-") return null;
   const vocation = getHighscoreVocation(character.vocation);
-  const vocationRank = await findTibiaComSkillRank(character, column, vocation);
+  const vocationRank = await findTibiaComHighscoreRank(character, column.category, vocation, SKILL_HIGHSCORE_PAGE_COUNT);
   if (vocationRank) return vocationRank;
 
   const entries = await fetchHighscoreEntries(character.world, column.category, HIGHSCORE_PAGE_COUNT);
@@ -725,12 +743,12 @@ async function findSkillRank(character, column) {
   };
 }
 
-async function findTibiaComSkillRank(character, column, vocation) {
-  const category = TIBIA_HIGHSCORE_CATEGORIES[column.category];
+async function findTibiaComHighscoreRank(character, categoryKey, vocation, pages = SKILL_HIGHSCORE_PAGE_COUNT) {
+  const category = TIBIA_HIGHSCORE_CATEGORIES[categoryKey];
   const profession = TIBIA_HIGHSCORE_PROFESSIONS[vocation];
   if (!category || !profession) return null;
 
-  for (let page = 1; page <= SKILL_HIGHSCORE_PAGE_COUNT; page += 1) {
+  for (let page = 1; page <= pages; page += 1) {
     const target = `https://www.tibia.com/community/?subtopic=highscores&world=${encodeURIComponent(character.world)}&category=${category}&profession=${profession}&currentpage=${page}`;
     const text = await fetchText(`${TIBIA_READER_BASE}${target}`).catch(() => "");
     const entries = parseTibiaComHighscores(text, character.world);
@@ -774,6 +792,51 @@ function renderSkillCell(result) {
       <small>Rank da vocacao #${escapeHtml(String(result.rank))}</small>
     </td>
   `;
+}
+
+async function hydrateCharacterRanks(character) {
+  const ranks = await findLevelRanks(character).catch(() => ({
+    globalOverall: null,
+    world: null,
+    vocation: null,
+  }));
+  if (state.currentCharacter?.name !== character.name) return;
+  character.levelRanks = ranks;
+  updateRankDetail("rankGlobalOverall", ranks.globalOverall);
+  updateRankDetail("rankWorld", ranks.world);
+  updateRankDetail("rankVocation", ranks.vocation);
+}
+
+async function findLevelRanks(character) {
+  const vocation = getHighscoreVocation(character.vocation);
+  const [globalEntries, worldEntries, vocationRank] = await Promise.all([
+    fetchHighscoreEntries("all", "experience", LEVEL_RANK_PAGE_COUNT),
+    fetchHighscoreEntries(character.world, "experience", LEVEL_RANK_PAGE_COUNT),
+    findTibiaComHighscoreRank(character, "experience", vocation, LEVEL_RANK_PAGE_COUNT),
+  ]);
+
+  const globalMatch = globalEntries
+    .map(normalizeRankingEntry)
+    .find((entry) => normalizeName(entry.name) === normalizeName(character.name) && entry.world === character.world);
+  const worldMatch = worldEntries
+    .map(normalizeRankingEntry)
+    .find((entry) => normalizeName(entry.name) === normalizeName(character.name));
+
+  const fallbackVocationRank = (() => {
+    if (vocationRank) return vocationRank.rank;
+    const sameVocation = worldEntries
+      .map(normalizeRankingEntry)
+      .filter((entry) => isSameVocationFamily(entry.vocation, vocation))
+      .sort((a, b) => b.level - a.level || b.experience - a.experience);
+    const index = sameVocation.findIndex((entry) => normalizeName(entry.name) === normalizeName(character.name));
+    return index >= 0 ? index + 1 : null;
+  })();
+
+  return {
+    globalOverall: globalMatch?.rank || null,
+    world: worldMatch?.rank || null,
+    vocation: fallbackVocationRank,
+  };
 }
 
 function renderEntityTabs(type, active) {
@@ -905,10 +968,31 @@ function formatDate(value) {
   }).format(date);
 }
 
+function renderRankText(value) {
+  if (value === undefined) return "consultando...";
+  if (value === null) return "fora do top consultado";
+  return `#${formatNumber(value)}`;
+}
+
+function updateRankDetail(id, value) {
+  const target = document.querySelector(`#${id}`);
+  if (target) {
+    target.textContent = renderRankText(value);
+  }
+}
+
 function toDateKey(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return date.toISOString().slice(0, 10);
+}
+
+function setBodyVocation(vocation = "") {
+  document.body.classList.remove(...BODY_VOCATION_CLASSES);
+  const family = getHighscoreVocation(vocation);
+  if (["paladin", "sorcerer", "druid", "knight", "monk"].includes(family)) {
+    document.body.classList.add(`vocation-${family}`);
+  }
 }
 
 function getHighscoreVocation(vocation = "") {
@@ -920,6 +1004,12 @@ function getHighscoreVocation(vocation = "") {
   if (lower.includes("monk")) return "monk";
   if (lower === "none") return "none";
   return "all";
+}
+
+function getGuildName(guild) {
+  if (!guild) return "-";
+  if (typeof guild === "string") return guild;
+  return guild.name || guild.guild_name || guild.guild || "-";
 }
 
 function isSameVocationFamily(vocation = "", family = "all") {
