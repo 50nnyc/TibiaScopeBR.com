@@ -75,7 +75,7 @@ body.vocation-knight {
 }
 
 body.vocation-monk {
-  --vocation-art: var(--asset-vocation-monk, url("assets/vocation-monk.svg"));
+  --vocation-art: var(--asset-vocation-druid, url("assets/vocation-druid.png"));
 }
 
 body.vocation-paladin::after,
@@ -126,17 +126,17 @@ main,
   display: flex;
   align-items: center;
   gap: 0.8rem;
-  min-width: min(20rem, 52vw);
+  min-width: min(28rem, 76vw);
 }
 
 .brand-logo {
   position: relative;
   display: grid;
-  width: min(22rem, 54vw);
-  min-width: 14rem;
-  height: 4.5rem;
+  width: min(29rem, 76vw);
+  min-width: 21rem;
+  height: 4.8rem;
   align-items: center;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .brand-logo img {
@@ -169,10 +169,12 @@ main,
 .brand-logo strong {
   position: relative;
   margin-left: 7.5rem;
+  padding-right: 1rem;
   color: #e7f9ff;
-  font-size: clamp(1.35rem, 3vw, 2.2rem);
+  font-size: clamp(1.3rem, 2.35vw, 2rem);
   font-weight: 900;
   letter-spacing: 0;
+  white-space: nowrap;
   opacity: 0;
   text-shadow:
     0 0 10px rgba(126, 216, 255, 0.55),
@@ -295,10 +297,8 @@ main,
 }
 
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
-  gap: 1.2rem;
-  width: min(1220px, calc(100% - 2rem));
+  display: block;
+  width: min(1100px, calc(100% - 2rem));
   margin: 1.2rem auto 0;
   min-height: calc(100vh - 6rem);
 }
